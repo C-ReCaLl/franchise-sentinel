@@ -28,6 +28,8 @@ from bs4 import BeautifulSoup
 
 BASE_DIR = Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "config.json"
+CONFIG_EXAMPLE_FILE = BASE_DIR / "config.example.json"
+CCFA_BRANDS_FILE = BASE_DIR / "ccfa_top300_brands.json"
 HISTORY_FILE = BASE_DIR / "pushed_history.json"
 DAILY_FINDINGS_FILE = BASE_DIR / "daily_findings.json"
 LOG_FILE = BASE_DIR / "monitor.log"
@@ -243,10 +245,15 @@ DIRECT_SOURCES = [
 
 def load_config() -> dict:
     config = DEFAULT_CONFIG.copy()
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+    config_source = CONFIG_FILE if CONFIG_FILE.exists() else CONFIG_EXAMPLE_FILE
+    if config_source.exists():
+        with open(config_source, "r", encoding="utf-8") as f:
             user_config = json.load(f)
         config.update(user_config)
+
+    if not config.get("ccfa_top300_brands") and CCFA_BRANDS_FILE.exists():
+        with open(CCFA_BRANDS_FILE, "r", encoding="utf-8") as f:
+            config["ccfa_top300_brands"] = json.load(f)
 
     # 环境变量优先，适合服务器部署，避免把机器人地址写进代码或仓库。
     env_webhook = os.getenv("WECOM_WEBHOOK", "").strip()
