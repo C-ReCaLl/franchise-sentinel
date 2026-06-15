@@ -238,11 +238,6 @@ DIRECT_SOURCES = [
         "url": "https://www.thepaper.cn/list_25635",
         "parser": "generic_list",
     },
-    {
-        "name": "上观新闻·产经",
-        "url": "https://m.jfdaily.com/staticsg/wap/subsection?id=303",
-        "parser": "generic_list",
-    },
 ]
 
 
