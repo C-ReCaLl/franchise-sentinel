@@ -1,0 +1,47 @@
+name: 特许鹰眼两小时监控
+
+on:
+  schedule:
+    # GitHub Actions 使用 UTC；UTC 偶数点对应北京时间偶数点。
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: franchise-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+      STATE_REPO: C-ReCaLl/franchise-sentinel-state
+      GITHUB_TOKEN: ${{ secrets.STATE_REPO_TOKEN }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: 拉取主项目代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+
+      - name: 拉取云端状态文件
+        run: python state_sync.py pull
+
+      - name: 运行两小时监控
+        run: python franchise_monitor.py --once
+
+      - name: 回写云端状态文件
+        if: always()
+        run: python state_sync.py push
