@@ -16,7 +16,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urljoin
@@ -41,6 +41,8 @@ DEFAULT_CONFIG = {
     "fetch_article_detail": True,
     "detail_fetch_limit_per_round": 20,
     "daily_summary_time": "09:00",
+    "max_article_age_days": 30,
+    "require_publish_date": True,
     "priority_brands": [],
     "ccfa_top300_brands": [],
     "search_queries": [
@@ -59,6 +61,27 @@ DEFAULT_CONFIG = {
         "site:zhihu.com 特许经营 加盟 纠纷",
         "site:xiaohongshu.com 加盟 维权",
         "site:weibo.com 加盟 退费",
+        "特许经营 未备案 处罚",
+        "两店一年 违规 罚款",
+        "加盟 合同纠纷 品牌方 败诉",
+        "特许经营 信息披露 违法",
+        "快招 骗局 加盟 维权",
+        "特许经营 备案 撤销",
+        "加盟 冷静期 法院 判决",
+        "特许人 虚假宣传 罚款",
+        "加盟费 退还 判决",
+        "特许经营 监管 新规",
+        "商务违法行为 加盟 处罚",
+        "未备案 招商 罚款",
+        "加盟商 解约 胜诉",
+        "特许经营 不合规 整改",
+        "品牌方 加盟 连带责任",
+        "商务部 特许经营 备案 企业 违规",
+        "加盟 跑路 总部 责任",
+        "特许经营 合同 无效 案例",
+        "区域代理 加盟 纠纷 2026",
+        "商标 无效宣告",
+        "商标 撤销",
     ],
     "exclude_keywords": ["游戏加盟", "手游", "二次元", "明星", "影视", "彩票", "加盟广告", "招商电话"],
 }
@@ -98,6 +121,7 @@ SCORE_RULES = {
     "品牌授权": 4,
     "招商加盟": 4,
     "连锁加盟": 4,
+    "信息披露": 5,
     "行政处罚": 6,
     "处罚决定书": 6,
     "责令改正": 5,
@@ -107,16 +131,34 @@ SCORE_RULES = {
     "违法广告": 4,
     "未备案": 6,
     "备案": 2,
+    "撤销": 3,
     "退费": 4,
+    "退还": 4,
     "退款": 3,
     "解除合同": 4,
+    "解约": 4,
+    "冷静期": 5,
     "合同纠纷": 4,
+    "合同无效": 5,
     "法院判决": 4,
     "判决": 3,
     "起诉": 3,
     "败诉": 3,
+    "胜诉": 3,
+    "连带责任": 4,
     "维权": 3,
     "投诉": 3,
+    "快招": 4,
+    "骗局": 4,
+    "跑路": 4,
+    "总部责任": 4,
+    "商务违法行为": 5,
+    "不合规": 4,
+    "整改": 3,
+    "商标无效宣告": 5,
+    "无效宣告": 4,
+    "商标撤销": 5,
+    "商标": 2,
     "加盟": 2,
     "连锁": 1,
 }
@@ -125,9 +167,11 @@ SCORE_RULES = {
 RISK_LABEL_RULES = [
     ("行政处罚", ["行政处罚", "处罚决定书", "责令改正", "罚款", "没收违法所得"]),
     ("未备案/备案风险", ["未备案", "备案", "商业特许经营"]),
-    ("招商宣传风险", ["虚假宣传", "违法广告", "招商加盟", "收益承诺"]),
-    ("加盟合同纠纷", ["加盟合同", "合同纠纷", "退费", "退款", "解除合同", "判决", "起诉"]),
-    ("加盟商维权/舆情", ["加盟商", "维权", "投诉", "踩坑"]),
+    ("信息披露风险", ["信息披露"]),
+    ("招商宣传风险", ["虚假宣传", "违法广告", "招商加盟", "收益承诺", "快招", "骗局"]),
+    ("加盟合同纠纷", ["加盟合同", "合同纠纷", "退费", "退还", "退款", "解除合同", "解约", "冷静期", "判决", "起诉", "败诉", "胜诉", "合同无效", "连带责任"]),
+    ("加盟商维权/舆情", ["加盟商", "维权", "投诉", "踩坑", "跑路", "总部责任"]),
+    ("商标/IP风险", ["商标", "无效宣告", "商标撤销", "商标无效宣告"]),
 ]
 
 
@@ -218,6 +262,105 @@ def truncate(text: str, max_len: int = 120) -> str:
     return text[:max_len] + "…" if len(text) > max_len else text
 
 
+def current_now() -> datetime:
+    return datetime.now()
+
+
+def parse_publish_datetime(text: str) -> Optional[datetime]:
+    """从标题、摘要、正文中尽量识别发布时间。识别不到返回 None。"""
+    text = normalize_text(text)
+    now = current_now()
+
+    relative_patterns = [
+        (r"(\d+)\s*分钟[前内]", "minutes"),
+        (r"(\d+)\s*小时[前内]", "hours"),
+        (r"(\d+)\s*天前", "days"),
+    ]
+    for pattern, unit in relative_patterns:
+        m = re.search(pattern, text)
+        if m:
+            value = int(m.group(1))
+            if unit == "minutes":
+                return now - timedelta(minutes=value)
+            if unit == "hours":
+                return now - timedelta(hours=value)
+            return now - timedelta(days=value)
+
+    if "今天" in text:
+        return now
+    if "昨天" in text:
+        return now - timedelta(days=1)
+    if "前天" in text:
+        return now - timedelta(days=2)
+
+    full_date_patterns = [
+        r"(20\d{2})[年/\-.](\d{1,2})[月/\-.](\d{1,2})",
+        r"(20\d{2})(\d{2})(\d{2})",
+    ]
+    full_date_candidates = []
+    for pattern in full_date_patterns:
+        for m in re.finditer(pattern, text):
+            try:
+                year, month, day = map(int, m.groups())
+                dt = datetime(year, month, day)
+                # 排除明显未来日期，避免把“2026榜单”等非发布时间误判为新新闻。
+                if dt <= now + timedelta(days=1):
+                    full_date_candidates.append(dt)
+            except ValueError:
+                continue
+    if full_date_candidates:
+        return max(full_date_candidates)
+
+    month_day_candidates = []
+    for m in re.finditer(r"(?<!年)(?<!\d)(\d{1,2})月(\d{1,2})日", text):
+        try:
+            month, day = map(int, m.groups())
+            dt = datetime(now.year, month, day)
+            if dt <= now + timedelta(days=1):
+                month_day_candidates.append(dt)
+        except ValueError:
+            continue
+    return max(month_day_candidates) if month_day_candidates else None
+
+
+def article_date_text(article: dict) -> str:
+    # 不使用正文 detail 里的日期做发布时间判断。
+    # 很多新闻页正文/侧栏/页脚会出现“当前日期”或其他推荐文章日期，容易把旧新闻误判成新新闻。
+    return " ".join([
+        article.get("published_at", ""),
+        article.get("title", ""),
+        article.get("summary", ""),
+        article.get("url", ""),
+    ])
+
+
+def attach_publish_date(article: dict) -> dict:
+    dt = parse_publish_datetime(article_date_text(article))
+    article["_publish_dt"] = dt
+    article["_publish_date"] = dt.strftime("%Y-%m-%d") if dt else ""
+    return article
+
+
+def is_recent_article(article: dict) -> bool:
+    dt = article.get("_publish_dt")
+    require_date = bool(CONFIG.get("require_publish_date", True))
+    max_age_days = int(CONFIG.get("max_article_age_days", 30))
+    if not dt:
+        article["_freshness_reason"] = "未识别到发布时间"
+        return not require_date
+
+    age_days = (current_now() - dt).days
+    if age_days < 0:
+        article["_freshness_reason"] = "发布时间疑似未来日期"
+        return False
+    if age_days > max_age_days:
+        article["_freshness_reason"] = f"发布时间超过 {max_age_days} 天"
+        return False
+
+    article["_freshness_reason"] = f"发布时间 {article.get('_publish_date')}"
+    return True
+
+
 def make_article_id(title: str, url: str) -> str:
     normalized_title = re.sub(r"\s+", "", title.strip())
     normalized_url = url.strip().split("#")[0]
@@ -225,16 +368,33 @@ def make_article_id(title: str, url: str) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
+def make_title_id(title: str) -> str:
+    normalized_title = re.sub(r"[\s_\-—｜|:：,，。！!？?]+", "", title.strip().lower())
+    return "title:" + hashlib.md5(normalized_title.encode("utf-8")).hexdigest()
+
+
 def load_history() -> set:
-    if not HISTORY_FILE.exists():
-        return set()
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return set(data.get("ids", []))
-    except Exception as e:
-        logger.warning(f"读取历史记录失败，将重新初始化：{e}")
-        return set()
+    history = set()
+    if HISTORY_FILE.exists():
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            history.update(data.get("ids", []))
+        except Exception as e:
+            logger.warning(f"读取历史记录失败，将重新初始化：{e}")
+
+    # 兼容旧版本：旧历史只记录链接 ID。这里把每日素材里的标题也加入历史，减少同一新闻换来源重复推送。
+    if DAILY_FINDINGS_FILE.exists():
+        try:
+            with open(DAILY_FINDINGS_FILE, "r", encoding="utf-8") as f:
+                items = json.load(f)
+            for item in items if isinstance(items, list) else []:
+                title = item.get("title", "")
+                if title:
+                    history.add(make_title_id(title))
+        except Exception as e:
+            logger.warning(f"读取每日素材标题去重失败：{e}")
+    return history
 
 
 def save_history(history: set):
@@ -397,8 +557,19 @@ def parse_baidu_news(html: str, base_url: str, source_name: str) -> list:
         url = title_tag.get("href", "")
         summary_tag = item.select_one(".c-summary, .c-abstract")
         summary = normalize_text(summary_tag.get_text(" ", strip=True)) if summary_tag else ""
+        item_text = normalize_text(item.get_text(" ", strip=True))
+        published_at = ""
+        dt = parse_publish_datetime(item_text)
+        if dt:
+            published_at = dt.strftime("%Y-%m-%d")
         if title and url:
-            articles.append({"title": title, "url": url, "summary": summary, "source": source_name})
+            articles.append({
+                "title": title,
+                "url": url,
+                "summary": summary,
+                "source": source_name,
+                "published_at": published_at,
+            })
     return articles
 
 
@@ -417,12 +588,18 @@ def parse_sogou_wechat(html: str, base_url: str, source_name: str) -> list:
         account = normalize_text(account_tag.get_text(" ", strip=True)) if account_tag else "公众号"
         summary_tag = item.select_one("p.txt, .str_info, .digest")
         summary = normalize_text(summary_tag.get_text(" ", strip=True)) if summary_tag else ""
+        item_text = normalize_text(item.get_text(" ", strip=True))
+        published_at = ""
+        dt = parse_publish_datetime(item_text)
+        if dt:
+            published_at = dt.strftime("%Y-%m-%d")
         if title and href:
             articles.append({
                 "title": f"[公众号] {title}",
                 "url": href,
                 "summary": f"{account} {summary}",
                 "source": source_name,
+                "published_at": published_at,
             })
     return articles
 
@@ -443,7 +620,14 @@ def parse_generic_list(html: str, base_url: str, source_name: str) -> list:
         if key in seen:
             continue
         seen.add(key)
-        articles.append({"title": title, "url": url, "summary": "", "source": source_name})
+        dt = parse_publish_datetime(f"{title} {href}")
+        articles.append({
+            "title": title,
+            "url": url,
+            "summary": "",
+            "source": source_name,
+            "published_at": dt.strftime("%Y-%m-%d") if dt else "",
+        })
     return articles[:50]
 
 
@@ -495,11 +679,23 @@ def fetch_article_detail(article: dict) -> str:
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
+        meta_texts = []
+        for selector in [
+            "meta[property='article:published_time']",
+            "meta[name='publishdate']",
+            "meta[name='pubdate']",
+            "meta[name='date']",
+            "meta[itemprop='datePublished']",
+            "time",
+        ]:
+            for node in soup.select(selector):
+                meta_texts.append(node.get("content") or node.get("datetime") or node.get_text(" ", strip=True))
         candidates = soup.select("article, .article, .content, .main, .detail, #content, p")
         if candidates:
             text = " ".join(normalize_text(x.get_text(" ", strip=True)) for x in candidates)
         else:
             text = normalize_text(soup.get_text(" ", strip=True))
+        text = " ".join(meta_texts + [text])
         return truncate(text, 1200)
     except Exception:
         return ""
@@ -519,12 +715,17 @@ def dedupe_articles(articles: list) -> list:
             continue
         if key in seen:
             continue
+        title_key = make_title_id(title)
+        if title_key in seen:
+            continue
         seen.add(key)
         seen.add(url_key)
+        seen.add(title_key)
         art["title"] = title
         art["url"] = url
         art["summary"] = truncate(art.get("summary", ""), 240)
         art["_id"] = key
+        art["_title_id"] = title_key
         result.append(art)
     return result
 
@@ -575,8 +776,10 @@ def build_wecom_message(articles: list) -> dict:
         brands = "、".join(art.get("_brand_hits", [])) or "未命中重点品牌"
         keywords = "、".join(art.get("_keyword_hits", [])[:6]) or "无"
         summary = truncate(art.get("summary", ""), 90)
+        publish_date = art.get("_publish_date") or art.get("published_at") or "未知"
 
         lines.append(f"**{i}. [{level}优先级] {title}**")
+        lines.append(f"> 发布时间：{publish_date}")
         lines.append(f"> 风险类型：{labels}")
         lines.append(f"> 命中品牌：{brands}")
         lines.append(f"> 命中词：{keywords}｜分数：{score}")
@@ -614,6 +817,15 @@ def post_markdown_to_wecom(content: str) -> bool:
 
 
 def push_to_wecom(articles: list) -> bool:
+    if "--dry-run" in sys.argv:
+        logger.info("干跑模式：不推送企微，不写入历史。")
+        for art in articles:
+            logger.info(
+                f"[干跑] {art.get('_score')}分 {art.get('_publish_date')} "
+                f"{art.get('title')} {art.get('url')}"
+            )
+        return False
+
     webhook = CONFIG.get("wecom_webhook", "").strip()
     if not webhook:
         logger.warning("未配置企业微信机器人地址，本轮只打印结果，不推送。")
@@ -714,7 +926,7 @@ def enrich_and_filter(raw_articles: list, history: set) -> list:
     detail_count = 0
 
     for art in raw_articles:
-        if art["_id"] in history:
+        if art["_id"] in history or art.get("_title_id") in history:
             continue
 
         score_article(art)
@@ -729,6 +941,11 @@ def enrich_and_filter(raw_articles: list, history: set) -> list:
                 score_article(art)
                 detail_count += 1
                 time.sleep(0.8)
+
+        attach_publish_date(art)
+        if not is_recent_article(art):
+            logger.info(f"跳过非最新内容：{art.get('_freshness_reason')}｜{art.get('title')}")
+            continue
 
         if is_relevant(art):
             candidates.append(art)
@@ -753,11 +970,12 @@ def run_once():
 
     if to_push:
         push_ok = push_to_wecom(to_push)
-        append_daily_findings(to_push)
         if push_ok:
+            append_daily_findings(to_push)
             # 只把真正推送成功的内容写入历史，避免“没推送但被标记已读”。
             for art in to_push:
                 history.add(art["_id"])
+                history.add(art.get("_title_id"))
             save_history(history)
         else:
             logger.warning("本轮推送未成功，暂不写入已推送历史。")

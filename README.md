@@ -8,6 +8,7 @@
 
 - 每隔固定时间抓取一次特许经营相关线索。
 - 按法律风险相关性打分，减少泛泛的连锁商业新闻。
+- 默认只推送最近 30 天内能识别发布时间的内容，避免旧闻重复出现。
 - 识别行政处罚、未备案、招商宣传风险、加盟合同纠纷、加盟商维权等类型。
 - 接入 CCFA TOP300 品牌词库，提高重点连锁品牌命中率。
 - 推送即时线索到企业微信。
@@ -37,6 +38,12 @@ cp config.example.json config.json
 
 ```bash
 python3 franchise_monitor.py --once
+```
+
+干跑测试，不推送企微、不写入历史：
+
+```bash
+python3 franchise_monitor.py --once --dry-run
 ```
 
 推送每日汇总：
