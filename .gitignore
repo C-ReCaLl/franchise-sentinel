@@ -1,0 +1,7 @@
+config.json
+monitor.log
+pushed_history.json
+daily_findings.json
+__pycache__/
+*.pyc
+.DS_Store
