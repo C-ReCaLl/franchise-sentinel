@@ -2,46 +2,53 @@ name: 特许鹰眼每日简报
 
 on:
   schedule:
-    # GitHub Actions 使用 UTC；北京时间 09:00 = UTC 01:00。
+    # UTC 01:00 = 北京时间 09:00
     - cron: "0 1 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: franchise-daily-summary
-  cancel-in-progress: false
-
 jobs:
   daily-summary:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
-      STATE_REPO: C-ReCaLl/franchise-sentinel-state
-      GITHUB_TOKEN: ${{ secrets.STATE_REPO_TOKEN }}
-      PYTHONUNBUFFERED: "1"
 
     steps:
-      - name: 拉取主项目代码
+      - name: 检出代码
         uses: actions/checkout@v4
 
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: 安装依赖
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest responses
 
-      - name: 拉取云端状态文件
-        run: python state_sync.py pull
+      - name: 运行单元测试
+        run: |
+          python -m pytest tests/ -v --tb=short
 
-      - name: 运行每日简报
-        run: python franchise_monitor.py --daily-summary
+      - name: 拉取云端状态
+        env:
+          STATE_REPO: ${{ secrets.STATE_REPO || 'C-ReCaLl/franchise-sentinel-state' }}
+          GITHUB_TOKEN: ${{ secrets.STATE_REPO_TOKEN }}
+        run: |
+          python state_sync.py pull
 
-      - name: 回写云端状态文件
+      - name: 推送每日简报
+        env:
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+        run: |
+          python franchise_monitor.py --daily-summary
+
+      - name: 回写云端状态
         if: always()
-        run: python state_sync.py push
+        env:
+          STATE_REPO: ${{ secrets.STATE_REPO || 'C-ReCaLl/franchise-sentinel-state' }}
+          GITHUB_TOKEN: ${{ secrets.STATE_REPO_TOKEN }}
+        run: |
+          python state_sync.py push
